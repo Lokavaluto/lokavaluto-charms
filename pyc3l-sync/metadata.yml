@@ -1,0 +1,24 @@
+type: run-once
+maintainer: "Valentin Lab <valentin.lab@kalysto.org>"
+data-resources:
+  - /root/.local/state/pyc3l
+  - /var/cache/pyc3l
+
+provides:
+  comchain-db-sync:
+uses:
+  log-rotate:
+    #constraint: required | recommended | optional
+    #auto: pair | summon | none ## default: pair
+    constraint: recommended
+    auto: pair
+    solves:
+      disk-leak: "/var/log/letsencrypt"
+    #default-options:
+  schedule-command:
+    constraint: recommended
+    auto: summon
+    solves:
+      missing-feature: "Automatic certificate renewal"
+    default-options: !var-expand
+      schedule: "*/5 * * * *"  ## schedule backup every hour

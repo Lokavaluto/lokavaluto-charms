@@ -1,0 +1,41 @@
+#!/bin/bash
+
+set -e
+
+## Run pyc3l once on first deploy to ensure the SQLite database
+## and its 'transactions' table exist.  Without this, the
+## currency-stats post_deploy would fail because sqlite_fdw
+## cannot import a schema from an empty file.
+
+sqlite_host=$(resource:get data sqlite host) || exit 1
+sqlite_container=$(resource:get data sqlite container) || exit 1
+state_host=$(resource:get data state host) || exit 1
+state_container=$(resource:get data state container) || exit 1
+
+## Idempotent: skip if a tx_db file already exists
+if ls "$sqlite_host"/tx_db_*.sqlite 2>/dev/null | grep -q .; then
+    info "SQLite transaction DB already exists, skipping initial sync."
+    exit 0
+fi
+
+currency=$(options-get currency) || {
+    err "Missing ${WHITE}currency${NORMAL} option on ${DARKYELLOW}${SERVICE_NAME}${NORMAL}."
+    exit 1
+}
+
+info "Running initial pyc3l sync to create SQLite transaction DB..."
+cmd=(docker run --rm \
+    -v "$sqlite_host:$sqlite_container" \
+    -v "$state_host:$state_container" \
+    "$DOCKER_BASE_IMAGE" \
+    --debug \
+    report --raw \
+    --end-block 1 \
+    -c "$currency")
+
+echo "Launching: ${cmd[*]}" >&2
+"${cmd[@]}" || {
+    err "Initial pyc3l sync failed for currency ${WHITE}${currency}${NORMAL}." \
+        "The SQLite transaction DB could not be created."
+    exit 1
+}

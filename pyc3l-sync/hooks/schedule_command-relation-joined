@@ -1,0 +1,90 @@
+#!/bin/bash
+#!/bin/bash
+
+## When writing relation script, remember:
+##  - they should be idempotents
+##  - they can be launched while the dockers is already up
+##  - they are launched from the host
+##  - the target of the link is launched first, and get a chance to ``relation-set``
+##  - both side of the scripts get to use ``relation-get``.
+##  - use actions of other side for other side's business logic
+
+. lib/common
+
+
+##
+## This script has to replace `exclude-dbs` options to match definition
+## from `schedule-command` interface that is awaited by the target side
+## in the `pre_deploy` script.
+##
+
+if [ -z "$RELATION_DATA_FILE" ]; then
+    err "$FUNCNAME: relation does not seems to be correctly setup."
+    exit 1
+fi
+
+if ! [ -r "$RELATION_DATA_FILE" ]; then
+    err "$FUNCNAME: can't read relation's data." >&2
+    exit 1
+fi
+
+if ! type=$(cat "$RELATION_DATA_FILE" | shyaml get-type) || [ "$type" == "str" ]; then
+    ## Cached version already there or invalid yaml, it removed all other values
+
+    ## Note that we rely on the fact that when the relations
+    ## options are changed in the `compose.yml` file, the relation
+    ## data file is recreated from the values of the
+    ## `compose.yml`.
+    info "Previous relation data exists, will have to ignore it."
+
+    ## But this is flawed as DOCKER_BASE_IMAGE may have changed, or the
+    ## charm code afterwards could also have been updated...
+
+    ## So in this case, we need to ignore the file and use content of
+    ## SUBSET_ALL_RELATIONS_HASH which keeps the pristine value of
+    ## ``metadata.yml`` merged with ``compose.yml``.
+
+    relation_cfg=
+    while read-0 s rn ts rc td; do
+        [ "$s" == "$SERVICE_NAME" ] || continue
+        [ "$rn" == "schedule-command" ] || continue
+        relation_cfg="$rc"
+    done < "$SUBSET_ALL_RELATIONS"
+    echo "Relation config:" >&2
+    e "$relation_cfg" | prefix "  | " >&2
+    echo >&2
+    e "$relation_cfg" > "$RELATION_DATA_FILE"
+fi
+
+schedule=$(relation-get schedule) || exit 1
+
+## XXXvlab: could probably infer those
+start_date=$(options-get start-date) || {
+    err "Missing ${WHITE}start-date${NORMAL} option on ${DARKYELLOW}${SERVICE_NAME}${NORMAL}."
+    exit 1
+}
+currency=$(options-get currency) || {
+    err "Missing ${WHITE}currency${NORMAL} option on ${DARKYELLOW}${SERVICE_NAME}${NORMAL}."
+    exit 1
+}
+
+lock_opts=(-D -p 10 -k)
+
+##
+command=(
+    dc run --rm "$SERVICE_NAME"
+    --debug
+    report --raw
+    --start-date="$start_date"
+    -c "$currency"
+)
+
+quoted_command=()
+for arg in "${command[@]}"; do
+    quoted_command+=("$(printf "%q" "$arg")")
+done
+
+printf "(%s) {%s} %s\n" \
+       "$schedule" \
+       "${lock_opts[*]}" \
+       "${quoted_command[*]}" > "$RELATION_DATA_FILE"
