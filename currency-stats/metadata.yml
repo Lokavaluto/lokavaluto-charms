@@ -1,0 +1,30 @@
+subordinate: true
+requires:
+  metabase:
+    interface: metabase-server
+    scope: container
+  odoo-server:
+    interface: odoo-server
+  comchain-db-sync:
+    interface: comchain-db-sync
+
+uses:
+  metabase-server:
+    #constraint: required | recommended | optional
+    #auto: pair | summon | none ## default: pair
+    scope: container
+    constraint: required
+    auto: summon
+    solves:
+      disk-leak: "main running server"
+    #default-options:
+  odoo-server:
+    constraint: required
+    auto: pair
+    solves:
+      missing-feature: "odoo database to read"
+  comchain-db-sync:
+    constraint: required
+    auto: summon
+    solves:
+      missing-feature: "fetch and sync comchain db"
