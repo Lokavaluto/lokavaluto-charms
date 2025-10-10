@@ -1,0 +1,6 @@
+# -*- ispell-local-dictionary: "english" -*-
+
+* What is lokavaluto-charms ?
+
+This is a set of charms for 0k-ready deployment solution made by and
+for the lokavaluto members.
