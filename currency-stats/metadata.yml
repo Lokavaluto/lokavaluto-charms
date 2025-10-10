@@ -24,7 +24,12 @@ uses:
     solves:
       missing-feature: "odoo database to read"
   comchain-db-sync:
-    constraint: required
-    auto: summon
+    constraint: optional
+    auto: pair
     solves:
-      missing-feature: "fetch and sync comchain db"
+      missing-feature: "transaction db"
+  cyclos-server:
+    constraint: optional
+    auto: pair
+    solves:
+      missing-feature: "transaction db"
