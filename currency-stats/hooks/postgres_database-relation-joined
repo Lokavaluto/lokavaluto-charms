@@ -1,0 +1,183 @@
+#!/bin/bash
+
+. lib/common
+
+set -e
+
+dbname=$(relation:get "$SERVICE_NAME":odoo-server:postgres-database dbname) || exit 1
+dbuser=$(relation:get "$SERVICE_NAME":odoo-server:postgres-database user) || exit 1
+
+
+if service:relation:exists "$SERVICE_NAME" comchain-db-sync; then
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}comchain-db-sync${NORMAL} relation" >&2
+
+    pyc3l_sync_service=$(service:traverse "$SERVICE_NAME":comchain-db-sync) || exit 1
+    pyc3l_sync_service_def=$(get_compose_service_def "$pyc3l_sync_service") || exit 1
+    currency=$(e "$pyc3l_sync_service_def" | shyaml get-value options.currency) || exit 1
+    currency_name=$(currency-stats:comchain:currency:normalize-name "$currency") || exit 1
+    sqlite_host_path=$(service:resource:get "${pyc3l_sync_service}" data sqlite host) || exit 1
+
+
+    sqlite_file="${sqlite_host_path}/tx_db_${currency_name}.sqlite"
+    technical_accounts=($(currency-stats:comchain:technical-accounts:get gemme)) || exit 1
+
+    technical_accounts_sql_list=""
+    for acc in "${technical_accounts[@]}"; do
+        if [ -n "$sql_list" ]; then
+            technical_accounts_sql_list+=", "
+        fi
+        technical_accounts_sql_list+="'${acc,,}'"
+    done
+
+    (
+        switch_to_relation_service postgres-database
+
+        set +e
+        . lib/common
+        set -e
+
+        ensure_db_docker_running || exit 1
+
+        if ! db_has_database "$dbname"; then
+            err "No postgres database '$dbname' found."
+            exit 1
+        fi
+
+        ddb -d "$dbname" <<EOF || exit 1
+
+CREATE EXTENSION sqlite_fdw;
+
+CREATE SERVER sqlite_srv
+  FOREIGN DATA WRAPPER sqlite_fdw
+  OPTIONS (database '${sqlite_file}', force_readonly 'true');
+
+CREATE SCHEMA ext;
+
+IMPORT FOREIGN SCHEMA someschema -- any name; SQLite has no real schemas
+  LIMIT TO (transactions) -- list of tables to import
+  FROM SERVER sqlite_srv
+  INTO ext
+  OPTIONS (import_not_null 'true', import_default 'false');
+
+
+CREATE OR REPLACE VIEW public.transactions_with_partners AS
+SELECT
+  t.amount,
+  t.received_at,
+  s.partner_id AS sender_partner_id,
+  r.partner_id AS receiver_partner_id,
+  (lower(t.sender) IN (${technical_accounts_sql_list}, 'admin')) AS is_sender_external,
+  (lower((t.receiver) IN (${technical_accounts_sql_list}) AS is_receiver_external
+FROM ext.transactions AS t
+LEFT JOIN public.res_partner_backend AS s
+  ON lower(CASE WHEN t.sender   LIKE '0x%' THEN substr(t.sender,3)   ELSE t.sender   END) = lower(s.comchain_id)
+LEFT JOIN public.res_partner_backend AS r
+  ON lower(CASE WHEN t.receiver LIKE '0x%' THEN substr(t.receiver,3) ELSE t.receiver END) = lower(r.comchain_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_rpb_comchain_id ON public.res_partner_backend (comchain_id);
+
+GRANT USAGE ON FOREIGN SERVER sqlite_srv TO ${dbuser};
+GRANT SELECT ON ext.transactions TO ${dbuser};
+GRANT USAGE ON FOREIGN SERVER sqlite_srv TO ${dbuser};
+CREATE USER MAPPING IF NOT EXISTS FOR odoo SERVER sqlite_srv;
+
+GRANT SELECT ON public.transactions_with_partners TO ${dbuser};
+ALTER VIEW public.transactions_with_partners OWNER TO ${dbuser};
+
+EOF
+
+    ) || exit 1
+
+elif service:relation:exists "$SERVICE_NAME" cyclos-server; then
+
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}cyclos-server${NORMAL} relation" >&2
+
+    cyclos_dbname=$(relation:get "$SERVICE_NAME":cyclos-server:postgres-database dbname) || exit 1
+
+    (
+        switch_to_relation_service postgres-database
+
+        set +e
+        . lib/common
+        set -e
+
+        ensure_db_docker_running || exit 1
+
+        if ! db_has_database "$dbname"; then
+            err "No postgres database '$dbname' found."
+            exit 1
+        fi
+
+
+        ddb -d "$dbname" <<EOF || exit 1
+
+CREATE EXTENSION IF NOT EXISTS postgres_fdw;
+
+CREATE SERVER cyclos_srv
+  FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (host '127.0.0.1', dbname '${cyclos_dname}', port '5432');
+
+
+CREATE USER MAPPING IF NOT EXISTS FOR ${dname}
+  SERVER cyclos_srv
+  OPTIONS (user '${user}', password '${password}');
+
+CREATE SCHEMA IF NOT EXISTS ext;
+
+IMPORT FOREIGN SCHEMA public
+  LIMIT TO (transactions, accounts, users)
+  FROM SERVER cyclos_srv INTO ext;
+
+ANALYZE ext.transactions;
+ANALYZE ext.accounts;
+ANALYZE ext.users;
+
+CREATE INDEX IF NOT EXISTS res_partner_email_lower_idx
+  ON public.res_partner ((lower(email)));
+
+
+CREATE OR REPLACE VIEW public.transactions_with_partners AS
+SELECT
+  t.amount * 100                            AS amount,
+  extract(epoch FROM t."date")::bigint AS received_at,
+  sp.id                                AS sender_partner_id,
+  rp.id                                AS receiver_partner_id,
+  sp.id != NULL                        AS is_sender_external,
+  rp.id != NULL                        AS is_receiver_external
+FROM ext.transactions t
+LEFT JOIN ext.accounts sa ON sa.id = t.from_id
+LEFT JOIN ext.users    su ON su.id = sa.user_id
+LEFT JOIN public.res_partner sp
+  ON lower(sp.email) = lower(su.email)
+
+LEFT JOIN ext.accounts ra ON ra.id = t.to_id
+LEFT JOIN ext.users    ru ON ru.id = ra.user_id
+LEFT JOIN public.res_partner rp
+  ON lower(rp.email) = lower(ru.email);
+
+
+GRANT USAGE ON SCHEMA public, ext TO ${dbuser};
+
+GRANT SELECT ON public.res_partner_backend TO ${dbuser};
+
+GRANT SELECT ON ext.transactions, ext.accounts, ext.users TO ${dbuser};
+
+GRANT USAGE ON FOREIGN SERVER cyclos_srv TO ${dbuser};
+CREATE USER MAPPING IF NOT EXISTS FOR ${dname}
+  SERVER cyclos_srv
+  OPTIONS (user '${user}', password '${password}');
+
+
+
+GRANT SELECT ON public.transactions_with_partners TO ${dbuser};
+ALTER VIEW public.transactions_with_partners OWNER TO ${dbuser};
+
+ALTER USER MAPPING FOR ${dbuser} SERVER cyclos_srv
+  OPTIONS (ADD password_required 'false');
+
+EOF
+
+    ) || exit 1
+
+fi

@@ -1,0 +1,36 @@
+# -*- ispell-local-dictionary: "english" -*-
+
+
+* What is ~currency-stats~
+
+This is a charm to be used for easy deployment of the infrastructure needed
+to get real-time available statistics through metabase for your local currency
+when using the lokavaluto solution.
+
+It integrates with your odoo installation and you financial backend
+(cyclos or comchain).
+
+
+* Usage
+
+
+Add this in your ~compose.yml~:
+
+#+begin_src yaml
+currency-stats:
+  relations:
+    web-proxy:
+      relations: stats.my-currency.com
+#+end_src
+
+This will install the metabase solution pre-configured to show you
+live statistics on you currency.
+
+
+
+* Acknowledgements
+
+This work has been sponsorised by [[https://localforlocal.io/][NGI Local for Local]] european program
+[[https://localforlocal.io/images/EU_flag.png]]
+
+[[https://localforlocal.io/images/LfL_logo.png]]

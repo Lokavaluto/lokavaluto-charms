@@ -18,6 +18,17 @@ uses:
     solves:
       disk-leak: "main running server"
     #default-options:
+  postgres-database:
+    #constraint: required | recommended | optional
+    #auto: pair | summon | none ## default: pair
+    scope: container
+    constraint: required
+    auto: summon
+    solves:
+      disk-leak: "main running server"
+    default-options:
+      extensions:
+        - sqlite_fdw
   odoo-server:
     constraint: required
     auto: pair
