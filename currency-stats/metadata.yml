@@ -1,23 +1,26 @@
 subordinate: true
+
+inherit: metabase
+
 requires:
-  metabase:
-    interface: metabase-server
-    scope: container
+  # metabase:
+  #   interface: metabase-server
+  #   scope: container
   odoo-server:
     interface: odoo-server
   comchain-db-sync:
     interface: comchain-db-sync
 
 uses:
-  metabase-server:
-    #constraint: required | recommended | optional
-    #auto: pair | summon | none ## default: pair
-    scope: container
-    constraint: required
-    auto: summon
-    solves:
-      disk-leak: "main running server"
-    #default-options:
+  # metabase-server:
+  #   #constraint: required | recommended | optional
+  #   #auto: pair | summon | none ## default: pair
+  #   scope: container
+  #   constraint: required
+  #   auto: summon
+  #   solves:
+  #     disk-leak: "main running server"
+  #   #default-options:
   postgres-database:
     #constraint: required | recommended | optional
     #auto: pair | summon | none ## default: pair
