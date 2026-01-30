@@ -4,3 +4,84 @@
 
 This is a set of charms for 0k-ready deployment solution made by and
 for the lokavaluto members.
+
+These charms provide the infrastructure needed to get real-time
+statistics on a local currency managed through the
+[[https://lokavaluto.fr/][Lokavaluto]] solution.  They integrate with
+an existing =Odoo= installation and a financial backend (=Comchain= or
+=Cyclos=).
+
+
+* Available charms
+
+** ~currency-stats~
+
+Deploys a =Metabase= dashboard pre-configured for currency analytics.
+It connects to your =Odoo= database and to your financial backend
+(=Comchain= or =Cyclos=) through foreign data wrappers so that
+transaction data can be queried in real time.
+
+See [[file:currency-stats/README.org][currency-stats/README.org]] for
+details.
+
+** ~pyc3l-sync~
+
+Periodically synchronises =Comchain= blockchain transaction data into
+a local SQLite database using [[https://github.com/com-chain/pyc3l-cli][pyc3l-cli]].
+It exposes the result through the ~comchain-db-sync~ interface so that
+~currency-stats~ (or any other consumer) can access the data.
+
+See [[file:pyc3l-sync/README.org][pyc3l-sync/README.org]] for details.
+
+
+* How the charms fit together
+
+When using =Comchain= as financial backend, a typical deployment wires
+the charms like this:
+
+#+begin_example
+pyc3l-sync ──comchain-db-sync──▶ currency-stats ◀──odoo-server── odoo
+                                        │
+                                        ▼
+                                    metabase
+                                   (web-proxy)
+#+end_example
+
+With =Cyclos=, ~pyc3l-sync~ is not needed — ~currency-stats~ reads
+transactions directly from the =Cyclos= PostgreSQL database through a
+~postgres_fdw~ foreign data wrapper.
+
+
+* Usage
+
+A minimal ~compose.yml~ bringing both charms together (comchain
+scenario):
+
+#+begin_src yaml
+odoo:
+  charm: odoo-tecnativa
+  relations:
+    web-proxy:
+      domain: odoo.my-currency.com
+
+currency-stats:
+  relations:
+    web-proxy:
+      domain: stats.my-currency.com
+
+pyc3l-sync:
+  options:
+    currency: MyCurrency
+    start-date: "2024-01-01"
+#+end_src
+
+Refer to each charm's own ~README.org~ for the full set of options and
+relations.
+
+
+* Acknowledgements
+
+This work has been sponsorised by [[https://localforlocal.io/][NGI Local for Local]] european program
+[[https://localforlocal.io/images/EU_flag.png]]
+
+[[https://localforlocal.io/images/LfL_logo.png]]
