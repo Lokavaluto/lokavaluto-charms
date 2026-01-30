@@ -1,0 +1,44 @@
+#!/bin/bash
+
+## Init is run on host
+## For now it is run every time the script is launched, but
+## it should be launched only once after build.
+
+## Accessible variables are:
+## - SERVICE_NAME        Name of current service
+## - DOCKER_BASE_IMAGE   Base image from which this service might be built if any
+## - SERVICE_DATASTORE           Location on host of the DATASTORE of this service
+## - SERVICE_CONFIGSTORE         Location on host of the CONFIGSTORE of this service
+
+. lib/common
+
+set -e
+
+
+## check we are connected to either a comchain-db-sync or
+## cyclos-server relation fullfilled and not both.
+
+has_comchain_db_sync=
+has_cyclos_server=
+if service:relation:exists "$SERVICE_NAME" comchain-db-sync; then
+    has_comchain_db_sync=1
+fi
+if service:relation:exists "$SERVICE_NAME" cyclos-server; then
+    has_cyclos_server=1
+fi
+
+if [ -n "$has_comchain_db_sync" ] && [ -n "$has_cyclos_server" ]; then
+    err "Service ${DARKYELLOW}$SERVICE_NAME${NORMAL} has both" \
+        "${DARKBLUE}comchain-db-sync${NORMAL} and" \
+        "${DARKBLUE}cyclos-server${NORMAL} relations."
+
+    echo "  Please connect to only one of these services." >&2
+    exit 1
+elif [ -z "$has_comchain_db_sync" ] && [ -z "$has_cyclos_server" ]; then
+    err "Service ${DARKYELLOW}$SERVICE_NAME${NORMAL} has neither" \
+        "${DARKBLUE}comchain-db-sync${NORMAL} nor" \
+        "${DARKBLUE}cyclos-server${NORMAL} relations."
+
+    echo "  Please connect to one of these services." >&2
+    exit 1
+fi

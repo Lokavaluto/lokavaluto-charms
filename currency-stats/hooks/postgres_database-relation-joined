@@ -1,0 +1,37 @@
+#!/bin/bash
+
+. lib/common
+
+set -e
+
+if service:relation:exists "$SERVICE_NAME" comchain-db-sync; then
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}comchain-db-sync${NORMAL} relation" >&2
+
+    pyc3l_sync_service=$(service:traverse "$SERVICE_NAME":comchain-db-sync) || exit 1
+    pyc3l_sync_service_def=$(get_compose_service_def "$pyc3l_sync_service") || exit 1
+    currency=$(e "$pyc3l_sync_service_def" | shyaml get-value options.currency) || exit 1
+    currency_name=$(currency-stats:comchain:currency:normalize-name "$currency") || exit 1
+    sqlite_host_path=$(service:resource:get "${pyc3l_sync_service}" data sqlite host) || exit 1
+
+    sqlite_file="${sqlite_host_path}/tx_db_${currency_name}.sqlite"
+    if [ ! -f "${sqlite_file}" ]; then
+        err "SQLite file '${sqlite_file}' does not exist." >&2
+        echo "  It should be provided at ${DARKBLUE}postgres-database${NORMAL} relation-joined time" >&2
+        exit 1
+    fi
+
+
+    ## Inject sqlite volume into postgres service for sqlite_fdw access
+    config-add "\
+services:
+  $TARGET_SERVICE_NAME:
+    volumes:
+      - '$sqlite_file:/var/lib/${pyc3l_sync_service}/${currency}/db.sqlite:ro'
+"
+
+elif service:relation:exists "$SERVICE_NAME" cyclos-server; then
+
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}cyclos-server${NORMAL} relation" >&2
+
+
+fi

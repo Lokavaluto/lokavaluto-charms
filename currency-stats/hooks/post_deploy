@@ -1,0 +1,293 @@
+#!/bin/bash
+
+. lib/common
+
+set -e
+
+odoo_service=$(service:traverse "$SERVICE_NAME":odoo-server) || exit 1
+dbname=$(relation:get "$SERVICE_NAME":odoo-server:postgres-database dbname) || exit 1
+dbuser=$(relation:get "$SERVICE_NAME":odoo-server:postgres-database user) || exit 1
+
+if service:relation:exists "$SERVICE_NAME" comchain-db-sync; then
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}comchain-db-sync${NORMAL} relation" >&2
+
+    pyc3l_sync_service=$(service:traverse "$SERVICE_NAME":comchain-db-sync) || exit 1
+    pyc3l_sync_service_def=$(get_compose_service_def "$pyc3l_sync_service") || exit 1
+    currency=$(e "$pyc3l_sync_service_def" | shyaml get-value options.currency) || exit 1
+    currency_name=$(currency-stats:comchain:currency:normalize-name "$currency") || exit 1
+
+    sqlite_file="/var/lib/${pyc3l_sync_service}/${currency}/db.sqlite"
+
+    if [[ "$sqlite_file" == *"'"* ]]; then
+        err "SQLite file path contains single quote, cannot safely use in SQL."
+        exit 1
+    fi
+
+    technical_accounts=($(currency-stats:comchain:technical-accounts:get "$currency_name")) || exit 1
+
+    technical_accounts_sql_list=""
+    for acc in "${technical_accounts[@]}"; do
+        if ! [[ "$acc" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+            err "Technical account '${acc}' is not a valid Ethereum address."
+            exit 1
+        fi
+        if [ -n "$technical_accounts_sql_list" ]; then
+            technical_accounts_sql_list+=", "
+        fi
+        technical_accounts_sql_list+="'${acc,,}'"
+    done
+
+    echo "Technical accounts SQL list: ${technical_accounts_sql_list}" >&2
+
+    inited_file="$SERVICE_DATASTORE/.compose/postgres_database-${pyc3l_sync_service}--${currency_name}.inited"
+    if [ -e "$inited_file" ]; then
+        info "Already initialized (${inited_file} exists), skipping."
+        exit 0
+    fi
+
+    ## Validate external inputs for safe use as SQL identifiers
+    for ident_name in pyc3l_sync_service currency_name dbuser dbname; do
+        ident_value="${!ident_name}"
+        if [[ "$ident_value" == *'"'* ]]; then
+            err "Unsupported double-quote in '$ident_name': $(printf '%q' "$ident_value")"
+            exit 1
+        fi
+    done
+
+
+    server_fdw_name="sqlite_srv_${pyc3l_sync_service}_${currency_name}"
+    table_name="transactions_${pyc3l_sync_service}_${currency_name}"
+    ext_name="ext_${pyc3l_sync_service}_${currency_name}"
+
+    (
+        switch_to_relation_service postgres-database || exit 1
+        echo "PWD: $PWD" >&2
+        echo "SERVICE_NAME: $SERVICE_NAME" >&2
+        set +e
+        . lib/common
+        set -e
+
+        ensure_db_docker_running || exit 1
+
+        if ! db_has_database "$dbname"; then
+            err "No postgres database '$dbname' found."
+            exit 1
+        fi
+        ## Check if odoo is properly installed
+        if [ -z "$(ddb -d "$dbname" -tA < <(echo "SELECT 1 FROM ir_module_module LIMIT 1;"))" ]; then
+            err "Odoo database '${dbname}' is missing ir_module_module table - odoo may not be installed yet."
+            exit 1
+        fi
+        ## Check if module is installed
+        odoo_modules_to_install=()
+        if [ -z "$(ddb -d "$dbname" -tA < <(echo "
+                        SELECT 1 FROM ir_module_module
+                        WHERE
+                            name = 'lcc_comchain_base' AND
+                            state = 'installed';"))" ]; then
+            info "Module lcc_lokavaluto_app_connection is not installed, installing..."
+            odoo_modules_to_install+=("lcc_comchain_base")
+        fi
+
+        if [ "${#odoo_modules_to_install[@]}" -gt 0 ]; then
+            odoo_containers=($(get_running_containers_for_service "$odoo_service")) || true
+
+            ## Stop odoo containers
+            for container in "${odoo_containers[@]}"; do
+                info "Stopping odoo container $container for module installation..."
+                docker stop "$container" || true
+            done
+
+            ## Install the module
+            fail=
+            if ! compose install "$odoo_service" "$dbname" "${odoo_modules_to_install[@]}"; then
+                err "Failed to install lcc_lokavaluto_app_connection module."
+                fail=1
+            fi
+            ## Restart odoo containers
+            for container in "${odoo_containers[@]}"; do
+                info "Restarting odoo container $container..."
+                docker start "$container" || true
+            done
+            if [ -n "$fail" ]; then
+                exit 1
+            fi
+            info "Module lcc_lokavaluto_app_connection installed successfully."
+        fi
+
+        ddb -d "$dbname" <<EOF || exit 1
+\set ON_ERROR_STOP on
+
+CREATE EXTENSION IF NOT EXISTS sqlite_fdw;  -- wasn't created yet on odoo db
+
+-- Server
+
+DROP SERVER IF EXISTS "${server_fdw_name}" CASCADE;
+CREATE SERVER "${server_fdw_name}"
+  FOREIGN DATA WRAPPER sqlite_fdw
+  OPTIONS (database '${sqlite_file}', force_readonly 'true');
+GRANT USAGE ON FOREIGN SERVER "${server_fdw_name}" TO "${dbuser}";
+CREATE USER MAPPING IF NOT EXISTS FOR "${dbuser}" SERVER "${server_fdw_name}";
+
+
+-- Schema and table import
+
+CREATE SCHEMA IF NOT EXISTS "${ext_name}";
+
+IMPORT FOREIGN SCHEMA someschema -- any name; SQLite has no real schemas
+  LIMIT TO (transactions) -- table to import
+  FROM SERVER "${server_fdw_name}"
+  INTO "${ext_name}"
+  OPTIONS (import_not_null 'true', import_default 'false');
+GRANT SELECT ON "${ext_name}".transactions TO "${dbuser}";
+
+
+-- View creation
+
+CREATE OR REPLACE VIEW public."${table_name}" AS
+SELECT
+  t.amount,
+  t.received_at,
+  s.partner_id AS sender_partner_id,
+  r.partner_id AS receiver_partner_id,
+  (lower(t.sender) IN (${technical_accounts_sql_list}, 'admin')) AS is_sender_external,
+  (lower(t.receiver) IN (${technical_accounts_sql_list})) AS is_receiver_external
+FROM "${ext_name}".transactions AS t
+LEFT JOIN public.res_partner_backend AS s
+  ON lower(CASE WHEN t.sender   LIKE '0x%' THEN substr(t.sender,3)   ELSE t.sender   END) = lower(s.comchain_id)
+LEFT JOIN public.res_partner_backend AS r
+  ON lower(CASE WHEN t.receiver LIKE '0x%' THEN substr(t.receiver,3) ELSE t.receiver END) = lower(r.comchain_id);
+GRANT SELECT ON public."${table_name}" TO "${dbuser}";
+ALTER VIEW public."${table_name}" OWNER TO "${dbuser}";
+
+CREATE INDEX IF NOT EXISTS idx_rpb_comchain_id ON public.res_partner_backend (comchain_id);
+
+EOF
+
+    ) || exit 1
+
+    ## Mark as initialized
+    mkdir -p "${inited_file%/*}"
+    touch "$inited_file"
+
+elif service:relation:exists "$SERVICE_NAME" cyclos-server; then
+
+    info "Service ${WHITE}$SERVICE_NAME${NORMAL} is connected to ${DARKBLUE}cyclos-server${NORMAL} relation" >&2
+
+    cyclos_service=$(service:traverse "$SERVICE_NAME":cyclos-server) || exit 1
+    cyclos_dbname=$(relation:get "$SERVICE_NAME":cyclos-server:postgres-database dbname) || exit 1
+    cyclos_dbuser=$(relation:get "$SERVICE_NAME":cyclos-server:postgres-database user) || exit 1
+    cyclos_dbpassword=$(relation:get "$SERVICE_NAME":cyclos-server:postgres-database password) || exit 1
+
+    ## Build unique identifier: hash of URL if web-proxy exists, otherwise service name
+    if cyclos_url=$(relation:get "$cyclos_service":web-proxy url 2>/dev/null) && [ -n "$cyclos_url" ]; then
+        cyclos_ident=$(printf '%s' "$cyclos_url" | md5sum | cut -c1-12)
+    else
+        cyclos_ident="$cyclos_service"
+    fi
+
+    inited_file="$SERVICE_DATASTORE/.compose/postgres_database-cyclos--${cyclos_ident}.inited"
+    if [ -e "$inited_file" ]; then
+        info "Already initialized (${inited_file} exists), skipping."
+        exit 0
+    fi
+
+    ## Validate external inputs for safe use as SQL identifiers (no double quotes)
+    for ident_name in cyclos_ident cyclos_dbname cyclos_dbuser dbuser dbname; do
+        ident_value="${!ident_name}"
+        if [[ "$ident_value" == *'"'* ]]; then
+            err "Unsupported double-quote in '$ident_name': $(printf '%q' "$ident_value")"
+            exit 1
+        fi
+    done
+
+    ## Validate password doesn't contain single quotes (used in SQL string literal)
+    if [[ "$cyclos_dbpassword" == *"'"* ]]; then
+        err "Unsupported single-quote in 'cyclos_dbpassword'"
+        exit 1
+    fi
+
+    server_fdw_name="cyclos_srv_${cyclos_ident}"
+    ext_name="ext_cyclos_${cyclos_ident}"
+    table_name="transactions_cyclos_${cyclos_ident}"
+
+    (
+        switch_to_relation_service postgres-database || exit 1
+
+        set +e
+        . lib/common
+        set -e
+
+        ensure_db_docker_running || exit 1
+
+        if ! db_has_database "$dbname"; then
+            err "No postgres database '$dbname' found."
+            exit 1
+        fi
+
+
+        ddb -d "$dbname" <<EOF || exit 1
+\set ON_ERROR_STOP on
+
+CREATE EXTENSION IF NOT EXISTS postgres_fdw;  -- wasn't created yet on odoo db
+
+-- Server
+
+DROP SERVER IF EXISTS "${server_fdw_name}" CASCADE;
+CREATE SERVER "${server_fdw_name}"
+  FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (host '127.0.0.1', dbname '${cyclos_dbname}', port '5432');
+GRANT USAGE ON FOREIGN SERVER "${server_fdw_name}" TO "${dbuser}";
+
+CREATE USER MAPPING IF NOT EXISTS FOR "${dbuser}"
+  SERVER "${server_fdw_name}"
+  OPTIONS (user '${cyclos_dbuser}', password '${cyclos_dbpassword}');
+
+CREATE SCHEMA IF NOT EXISTS "${ext_name}";
+
+IMPORT FOREIGN SCHEMA public
+  LIMIT TO (transactions, accounts, users)
+  FROM SERVER "${server_fdw_name}" INTO "${ext_name}";
+
+GRANT USAGE ON SCHEMA "${ext_name}" TO "${dbuser}";
+GRANT SELECT ON "${ext_name}".transactions, "${ext_name}".accounts, "${ext_name}".users TO "${dbuser}";
+
+ANALYZE "${ext_name}".transactions;
+ANALYZE "${ext_name}".accounts;
+ANALYZE "${ext_name}".users;
+
+CREATE INDEX IF NOT EXISTS idx_res_partner_email_lower
+  ON public.res_partner ((lower(email)));
+
+
+CREATE OR REPLACE VIEW public."${table_name}" AS
+SELECT
+  t.amount * 100                       AS amount,
+  extract(epoch FROM t."date")::bigint AS received_at,
+  sp.id                                AS sender_partner_id,
+  rp.id                                AS receiver_partner_id,
+  (sp.id IS NULL)                      AS is_sender_external,
+  (rp.id IS NULL)                      AS is_receiver_external
+FROM "${ext_name}".transactions t
+LEFT JOIN "${ext_name}".accounts sa ON sa.id = t.from_id
+LEFT JOIN "${ext_name}".users    su ON su.id = sa.user_id
+LEFT JOIN public.res_partner sp
+  ON lower(sp.email) = lower(su.email)
+
+LEFT JOIN "${ext_name}".accounts ra ON ra.id = t.to_id
+LEFT JOIN "${ext_name}".users    ru ON ru.id = ra.user_id
+LEFT JOIN public.res_partner rp
+  ON lower(rp.email) = lower(ru.email);
+
+GRANT SELECT ON public."${table_name}" TO "${dbuser}";
+ALTER VIEW public."${table_name}" OWNER TO "${dbuser}";
+
+EOF
+
+    ) || exit 1
+
+    ## Mark as initialized
+    mkdir -p "${inited_file%/*}"
+    touch "$inited_file"
+
+fi
