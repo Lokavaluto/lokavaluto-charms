@@ -1,0 +1,51 @@
+# -*- ispell-local-dictionary: "english" -*-
+
+
+* What is ~pyc3l-sync~
+
+This is a charm that periodically synchronises comchain blockchain
+transaction data into a local SQLite database using the
+[[https://github.com/com-chain/pyc3l-cli][pyc3l-cli]] tool.
+
+It exposes the resulting SQLite database through the
+~comchain-db-sync~ interface so that other charms (such as
+~currency-stats~) can consume the transaction data.
+
+
+* What this charm takes care of
+
+- Builds a Docker image packaging ~pyc3l-cli~ (multi-stage Alpine
+  build with Python and ~uv~).
+- Runs ~pyc3l report --raw~ on a configurable cron schedule (every 5
+  minutes by default) to fetch comchain transactions.
+- Persists synchronisation state in ~/root/.local/state/pyc3l~ and
+  the SQLite transaction database in ~/var/cache/pyc3l~.
+- Provides the ~comchain-db-sync~ interface, making the SQLite
+  database available to consuming charms.
+- Integrates with ~schedule-command~ for periodic execution with
+  file-locking to prevent overlapping runs.
+- Integrates with ~log-rotate~ to manage log file growth.
+
+
+* Usage
+
+Add this in your ~compose.yml~:
+
+#+begin_src yaml
+pyc3l-sync:
+  options:
+    currency: MyCurrency
+    start-date: "2024-01-01"
+#+end_src
+
+The ~currency~ option must match a currency name known to the comchain
+network, and ~start-date~ sets the earliest date from which
+transactions are fetched.
+
+
+* Acknowledgements
+
+This work has been sponsorised by [[https://localforlocal.io/][NGI Local for Local]] european program
+[[https://localforlocal.io/images/EU_flag.png]]
+
+[[https://localforlocal.io/images/LfL_logo.png]]
