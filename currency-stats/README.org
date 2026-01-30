@@ -1,0 +1,59 @@
+# -*- ispell-local-dictionary: "english" -*-
+
+
+* What is ~currency-stats~
+
+This is a charm to be used for easy deployment of the infrastructure needed
+to get real-time available statistics through metabase for your local currency
+when using the lokavaluto solution.
+
+It integrates with your odoo installation and you financial backend
+(cyclos or comchain).
+
+
+* What this charm takes care of
+
+- Deploys a =Metabase= instance (inherited charm) pre-configured for
+  currency analytics.
+- Provisions a =PostgreSQL= database with the required foreign data
+  wrapper extensions (~sqlite_fdw~ for comchain, ~postgres_fdw~ for
+  cyclos).
+- Connects to your =Odoo= server to access partner data
+  (~res_partner~, ~res_partner_backend~) and installs the
+  ~lcc_comchain_base~ module if needed.
+- Supports =Comchain= as a financial backend: sets up an SQLite
+  foreign data wrapper to read the local comchain transaction
+  database, resolves currency names and technical accounts from IPFS,
+  and creates an SQL view joining transactions with Odoo partners.
+- Supports =Cyclos= as a financial backend: sets up a PostgreSQL
+  foreign data wrapper to the Cyclos database and creates an SQL view
+  joining transactions with Odoo partners via email matching.
+- Enforces mutual exclusion between comchain and cyclos backends (you
+  must connect exactly one).
+- Exposes the dashboard through the ~web-proxy~ relation.
+- Ensures idempotent setup: tracks initialization state so
+  re-deployments skip already-completed steps.
+
+* Usage
+
+
+Add this in your ~compose.yml~:
+
+#+begin_src yaml
+currency-stats:
+  relations:
+    web-proxy:
+      relations: stats.my-currency.com
+#+end_src
+
+This will install the metabase solution pre-configured to show you
+live statistics on you currency.
+
+
+
+* Acknowledgements
+
+This work has been sponsorised by [[https://localforlocal.io/][NGI Local for Local]] european program
+[[https://localforlocal.io/images/EU_flag.png]]
+
+[[https://localforlocal.io/images/LfL_logo.png]]

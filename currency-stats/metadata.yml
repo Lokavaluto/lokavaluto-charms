@@ -1,30 +1,34 @@
-subordinate: true
+inherits: metabase
+
 requires:
-  metabase:
-    interface: metabase-server
-    scope: container
   odoo-server:
     interface: odoo-server
   comchain-db-sync:
     interface: comchain-db-sync
 
 uses:
-  metabase-server:
+  postgres-database:
     #constraint: required | recommended | optional
     #auto: pair | summon | none ## default: pair
-    scope: container
     constraint: required
     auto: summon
     solves:
       disk-leak: "main running server"
-    #default-options:
+    default-options:
+      extensions:
+        - sqlite_fdw
   odoo-server:
     constraint: required
     auto: pair
     solves:
       missing-feature: "odoo database to read"
   comchain-db-sync:
-    constraint: required
-    auto: summon
+    constraint: optional
+    auto: pair
     solves:
-      missing-feature: "fetch and sync comchain db"
+      missing-feature: "transaction db"
+  cyclos-server:
+    constraint: optional
+    auto: pair
+    solves:
+      missing-feature: "transaction db"

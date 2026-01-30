@@ -1,0 +1,118 @@
+# -*- mode: shell-script -*-
+
+CURRENCY_STATS=
+IPFS_CURRENCY_LIST_URL="https://node-001.cchosting.org/ipns/QmaAAZor2uLKnrzGCwyXTSwogJqmPjJgvpYgpmtz5XcSmR/configs/list.json"
+
+
+
+currency-stats:comchain:currencies:list() {
+    local found currency_list_json currency_list \
+          cache_dir="$SERVICE_DATASTORE/var/cache/currency-stats" \
+          cache_file cache_max_age_days=15
+
+    cache_file="$cache_dir/currency-list.txt"
+    mkdir -p "$cache_dir"
+
+    ## Check if cache exists and is less than 15 days old
+    if [ -e "$cache_file" ]; then
+        local file_age_days=$(( ( $(date +%s) - $(stat -c %Y "$cache_file") ) / 86400 ))
+        if [ "$file_age_days" -lt "$cache_max_age_days" ]; then
+            debug "Using cached currency list (age: ${file_age_days} days)"
+            cat "$cache_file"
+            return 0
+        fi
+    fi
+
+    ## Contains json like this:
+    # {
+    #     "0xe8d123AfaF9104C7B1c454d32b04176f7D78A711": "Agnel",
+    #     ...
+    #     "0x2297f43487D4269c5A41DE128a89d9067770c7Dc": "Gemme",
+    # }
+    currency_list_json=$(curl -sS --max-time 60 "$IPFS_CURRENCY_LIST_URL") || {
+        err "Couldn't fetch currency list from $IPFS_CURRENCY_LIST_URL"
+        return 1
+    }
+    ## only need the list of names of the currencies
+    currency_list=($(e "$currency_list_json" | yq -e 'to_entries | .[] | .value'))
+    if [ "${#currency_list[@]}" -eq 0 ]; then
+        err "No currency found in list of supported currencies:"
+        e "$currency_list_json" | yq -e 'to_entries | .[] | "  - " + .value'
+        return 1
+    fi
+
+    for c in "${currency_list[@]}"; do
+        e "$c"$'\n'
+    done | tee "$cache_file"
+}
+
+currency-stats:comchain:currency:normalize-name() {
+    local currency="$1"
+
+    local found currency_list_json currency_list \
+          cache_file="$state_tmpdir/$FUNCNAME.cache.$1"
+
+    if [ -e "$cache_file" ]; then
+        cat "$cache_file"
+        return 0
+    fi
+
+    if ! [[ "$currency" =~ ^[a-zA-Z_-]+$ ]]; then
+        err "Invalid currency name '$currency'. Only [a-zA-Z_-] are allowed."
+        return 1
+    fi
+    currency=${currency,,}  ## to lower case
+
+    currency_list=($(currency-stats:comchain:currencies:list)) || return 1
+
+    ## intelligent match (fuzzy)
+    found=
+    for c in "${currency_list[@]}"; do
+        if [[ "${c,,}" =~ ^((la|le|monnaie)-?)?"$currency" ]]; then
+            found="$c"
+            break
+        fi
+    done
+    if [ -z "$found" ]; then
+        err "Currency '$currency' not found in list of supported currencies:"
+        for c in "${currency_list[@]}"; do
+            echo "  - $c" >&2
+        done
+        return 1
+    fi
+    e "$found" | tee "$cache_file"
+}
+
+currency-stats:comchain:technical-accounts:get() {
+    local currency="$1" currency_name currency_json ipfs_currency_url \
+          cache_dir="$SERVICE_DATASTORE/var/cache/currency-stats" \
+          cache_file cache_max_age_days=15
+
+    currency_name=$(currency-stats:comchain:currency:normalize-name "$currency") || return 1
+
+    cache_file="$cache_dir/technical-accounts-${currency_name}.txt"
+    mkdir -p "$cache_dir"
+
+    ## Check if cache exists and is less than 15 days old
+    if [ -e "$cache_file" ]; then
+        local file_age_days=$(( ( $(date +%s) - $(stat -c %Y "$cache_file") ) / 86400 ))
+        if [ "$file_age_days" -lt "$cache_max_age_days" ]; then
+            debug "Using cached technical accounts for ${currency_name} (age: ${file_age_days} days)"
+            cat "$cache_file"
+            return 0
+        fi
+    fi
+
+    ipfs_currency_url="${IPFS_CURRENCY_LIST_URL%list.json}${currency_name}.json"
+
+    currency_json=$(curl -sS --max-time 60 "$ipfs_currency_url") || {
+        err "Couldn't fetch currency data from $ipfs_currency_url"
+        return 1
+    }
+
+    e "$currency_json" | yq -e '.server.technicalAccounts | .[]' | tee "$cache_file" || {
+        err "Couldn't parse currency data from $ipfs_currency_url"
+        rm -f "$cache_file"
+        return 1
+    }
+}

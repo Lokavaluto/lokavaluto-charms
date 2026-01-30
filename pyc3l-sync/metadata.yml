@@ -1,8 +1,8 @@
 type: run-once
 maintainer: "Valentin Lab <valentin.lab@kalysto.org>"
 data-resources:
-  - /root/.local/state/pyc3l
-  - /var/cache/pyc3l
+  state: /root/.local/state/pyc3l
+  sqlite: /var/cache/pyc3l
 
 provides:
   comchain-db-sync:

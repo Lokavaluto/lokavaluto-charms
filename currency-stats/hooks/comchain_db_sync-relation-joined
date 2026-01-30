@@ -1,0 +1,25 @@
+#!/bin/bash
+
+. lib/common
+
+set -e
+
+odoo_service=$(service:traverse "$SERVICE_NAME":odoo-server) || {
+    err "Failed to get ${DARKBLUE}odoo-server${NORMAL}'s service name"
+    exit 1
+}
+
+postgres_service=$(service:traverse "$odoo_service":postgres-database) || {
+    err "Failed to get ${DARKBLUE}postgres-database${NORMAL}'s service name"
+    exit 1
+}
+
+if ! sqlite_host_path=$(service:resource:get "$TARGET_SERVICE_NAME" data sqlite host); then
+    err "Failed to get sqlite resource path from ${DARKYELLOW}$TARGET_SERVICE_NAME${NORMAL}"
+    exit 1
+fi
+
+service:docker-compose:directive-merge "$postgres_service" <<EOF
+volumes:
+  - $sqlite_host_path:/var/lib/comchain_db_sync
+EOF
