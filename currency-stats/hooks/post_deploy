@@ -161,6 +161,9 @@ CREATE OR REPLACE VIEW public."${table_name}" AS
 SELECT
   t.amount,
   t.received_at,
+  t.hash,
+  t.fn_abi,
+  t.type,
   s.partner_id AS sender_partner_id,
   r.partner_id AS receiver_partner_id,
   (lower(t.sender) IN (${technical_accounts_sql_list}, 'admin')) AS is_sender_external,
